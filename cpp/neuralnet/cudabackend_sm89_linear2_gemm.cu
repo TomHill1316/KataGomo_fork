@@ -21,7 +21,10 @@ namespace Sm89Backend {
 namespace {
 
 constexpr int S = 361;
-constexpr int InChannels = 1152;
+// PATCH(prune-width): was `constexpr int InChannels = 1152`. Variable-width FFN
+// models need the linear2 reduction dim at runtime; the CUTLASS tile shapes and the
+// 8-half alignment constraint stay compile-time.
+constexpr int Linear2InAlign = 8;
 constexpr int OutChannels = 384;
 constexpr int AttentionChannels = 384;
 constexpr int PreConvInChannels = 768;
@@ -349,19 +352,20 @@ using Linear2BnKernel = cutlass::gemm::kernel::Gemm<
 
 struct Sm89Linear2Gemm::Impl {
   std::unique_ptr<GemmRunner> runner;
+  const int inChannels;
 
-  Impl(const half* weights, const std::string& tactic)
-    : runner(makeLinear2Runner(weights, tactic)) {}
+  Impl(const half* weights, const std::string& tactic, int inChannels_)
+    : runner(makeLinear2Runner(weights, tactic)), inChannels(inChannels_) {}
 
   bool applyAccumulate(const half* input, half* output, int tokens, cudaStream_t stream) {
     return runner != nullptr &&
-      runner->run(input, output, tokens, InChannels, OutChannels, 1.0f, stream);
+      runner->run(input, output, tokens, inChannels, OutChannels, 1.0f, stream);
   }
 };
 
 Sm89Linear2Gemm::Sm89Linear2Gemm(
-  const half* weights, const std::string& tactic)
-  : impl(std::make_unique<Impl>(weights, tactic))
+  const half* weights, const std::string& tactic, int inChannels)
+  : impl(std::make_unique<Impl>(weights, tactic, inChannels))
 {}
 
 Sm89Linear2Gemm::~Sm89Linear2Gemm() = default;
@@ -375,7 +379,8 @@ bool Sm89Linear2Gemm::applyAccumulate(
   int outChannels,
   cudaStream_t stream
 ) {
-  if(batchSize < 1 || seqLen != S || inChannels != InChannels ||
+  if(batchSize < 1 || seqLen != S || inChannels != impl->inChannels ||
+     inChannels % Linear2InAlign != 0 ||
      outChannels != OutChannels || input == nullptr || output == nullptr)
     return false;
   return impl->applyAccumulate(input, output, batchSize * seqLen, stream);
@@ -385,10 +390,12 @@ struct Sm89Linear2BnGemm::Impl {
   const half* weights;
   const half* bnScale;
   const half* bnBias;
+  const int inChannels;
   bool initialized;
 
-  Impl(const half* weights_, const half* bnScale_, const half* bnBias_)
-    : weights(weights_), bnScale(bnScale_), bnBias(bnBias_), initialized(true)
+  Impl(const half* weights_, const half* bnScale_, const half* bnBias_, int inChannels_)
+    : weights(weights_), bnScale(bnScale_), bnBias(bnBias_), inChannels(inChannels_),
+      initialized(true)
   {
     int smemSize = int(sizeof(typename Linear2BnKernel::SharedStorage));
     if(smemSize >= 48 * 1024)
@@ -408,7 +415,7 @@ struct Sm89Linear2BnGemm::Impl {
   ) {
     if(!initialized)
       return false;
-    cutlass::gemm::GemmCoord problem(tokens, OutChannels, InChannels);
+    cutlass::gemm::GemmCoord problem(tokens, OutChannels, inChannels);
     cutlass::gemm::GemmCoord gridShape = Linear2Swizzle::get_tiled_shape(
       problem,
       {FusedThreadblockShape::kM, FusedThreadblockShape::kN,
@@ -416,7 +423,7 @@ struct Sm89Linear2BnGemm::Impl {
       1
     );
     using Layout = cutlass::layout::RowMajor;
-    Layout inputLayout(InChannels);
+    Layout inputLayout(inChannels);
     Layout outputLayout(OutChannels);
     typename Linear2Mma::IteratorA::TensorRef nullInput(nullptr, inputLayout);
     typename Linear2Mma::IteratorB::TensorRef weightRef(
@@ -449,8 +456,9 @@ struct Sm89Linear2BnGemm::Impl {
 Sm89Linear2BnGemm::Sm89Linear2BnGemm(
   const half* weights,
   const half* bnScale,
-  const half* bnBias
-) : impl(std::make_unique<Impl>(weights, bnScale, bnBias))
+  const half* bnBias,
+  int inChannels
+) : impl(std::make_unique<Impl>(weights, bnScale, bnBias, inChannels))
 {}
 
 Sm89Linear2BnGemm::~Sm89Linear2BnGemm() = default;
@@ -465,7 +473,8 @@ bool Sm89Linear2BnGemm::applyAccumulateAndActivate(
   int outChannels,
   cudaStream_t stream
 ) {
-  if(batchSize < 1 || seqLen != S || inChannels != InChannels ||
+  if(batchSize < 1 || seqLen != S || inChannels != impl->inChannels ||
+     inChannels % Linear2InAlign != 0 ||
      outChannels != OutChannels || input == nullptr || residualOutput == nullptr ||
      activatedOutput == nullptr)
     return false;

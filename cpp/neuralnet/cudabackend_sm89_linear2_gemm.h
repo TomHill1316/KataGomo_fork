@@ -11,7 +11,7 @@ namespace Sm89Backend {
 #ifdef KATAGO_ENABLE_SM89_LINEAR2_GEMM
 class Sm89Linear2Gemm {
  public:
-  Sm89Linear2Gemm(const half* weights, const std::string& tactic);
+  Sm89Linear2Gemm(const half* weights, const std::string& tactic, int inChannels);
   ~Sm89Linear2Gemm();
   Sm89Linear2Gemm(const Sm89Linear2Gemm&) = delete;
   Sm89Linear2Gemm& operator=(const Sm89Linear2Gemm&) = delete;
@@ -36,7 +36,8 @@ class Sm89Linear2BnGemm {
   Sm89Linear2BnGemm(
     const half* weights,
     const half* bnScale,
-    const half* bnBias
+    const half* bnBias,
+    int inChannels
   );
   ~Sm89Linear2BnGemm();
   Sm89Linear2BnGemm(const Sm89Linear2BnGemm&) = delete;

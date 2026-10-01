@@ -1552,14 +1552,14 @@ struct Sm89FFNBlock {
 #ifdef KATAGO_ENABLE_SM89_DUAL_GEMM
       if(useDualGemmSwiGLU)
         dualGemmSwiGLU = std::make_unique<Sm89Backend::Sm89DualGemmSwiGLU>(
-          (const half*)ffnWeightsBuf, ctx->dualFfnCutlassTactic
+          (const half*)ffnWeightsBuf, ctx->dualFfnCutlassTactic, ffnChannels
         );
 #endif
     }
 #ifdef KATAGO_ENABLE_SM89_LINEAR2_GEMM
     if(useLinear2Gemm && useFP16 && useFusedResidual_) {
       linear2Gemm = std::make_unique<Sm89Backend::Sm89Linear2Gemm>(
-        (const half*)linear2.matBuf, ctx->linear2CutlassTactic);
+        (const half*)linear2.matBuf, ctx->linear2CutlassTactic, ffnChannels);
       if(
         useLinear2PostBNSilu_ && followingBN != nullptr &&
         followingBN->usingFP16 && followingBN->usingNHWC &&
@@ -1570,7 +1570,8 @@ struct Sm89FFNBlock {
         linear2PostBnGemm = std::make_unique<Sm89Backend::Sm89Linear2BnGemm>(
           (const half*)linear2.matBuf,
           (const half*)followingBN->mergedScaleBuf,
-          (const half*)followingBN->mergedBiasBuf
+          (const half*)followingBN->mergedBiasBuf,
+          ffnChannels
         );
       }
     }

@@ -11,7 +11,7 @@ namespace Sm89Backend {
 #ifdef KATAGO_ENABLE_SM89_DUAL_GEMM
 class Sm89DualGemmSwiGLU {
  public:
-  Sm89DualGemmSwiGLU(const half* weights, const std::string& tactic);
+  Sm89DualGemmSwiGLU(const half* weights, const std::string& tactic, int ffnChannels);
   ~Sm89DualGemmSwiGLU();
   Sm89DualGemmSwiGLU(const Sm89DualGemmSwiGLU&) = delete;
   Sm89DualGemmSwiGLU& operator=(const Sm89DualGemmSwiGLU&) = delete;

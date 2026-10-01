@@ -21,7 +21,11 @@ namespace {
 
 constexpr int S = 361;
 constexpr int Channels = 384;
-constexpr int FfnChannels = 1152;
+// PATCH(prune-width): was `constexpr int FfnChannels = 1152`. Variable-width FFN
+// models need the width at runtime. Only the problem shape and the leading
+// dimensions move to runtime; the CUTLASS tile shapes and the AlignmentA/B = 8
+// constraint stay compile-time, so the width must remain a multiple of 8.
+constexpr int FfnChannelAlign = 8;
 
 using Element = cutlass::half_t;
 using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombination<
@@ -109,22 +113,23 @@ typename Gemm::Arguments makeArguments(
   const half* weights,
   const half* input,
   half* output,
-  int tokens
+  int tokens,
+  int ffnChannels
 ) {
   using Layout = cutlass::layout::RowMajor;
   typename Gemm::TensorRefC nullC;
   typename Gemm::TensorRefD nullD;
   return {
     cutlass::gemm::DualGemmMode::kGemm,
-    {tokens, FfnChannels, Channels},
+    {tokens, ffnChannels, Channels},
     {reinterpret_cast<const Element*>(input), Layout(Channels)},
-    {reinterpret_cast<const Element*>(weights), Layout(FfnChannels)},
+    {reinterpret_cast<const Element*>(weights), Layout(ffnChannels)},
     nullC,
     nullD,
-    {reinterpret_cast<const Element*>(weights + (size_t)FfnChannels * Channels), Layout(FfnChannels)},
+    {reinterpret_cast<const Element*>(weights + (size_t)ffnChannels * Channels), Layout(ffnChannels)},
     nullC,
     nullD,
-    {reinterpret_cast<Element*>(output), Layout(FfnChannels)},
+    {reinterpret_cast<Element*>(output), Layout(ffnChannels)},
     {1.0f, 0.0f},
     {1.0f, 0.0f},
     {},
@@ -136,20 +141,21 @@ typename Gemm::Arguments makeArguments(
 
 struct Sm89DualGemmSwiGLU::Impl {
   const half* weights;
+  const int ffnChannels;
   DualGemmSwizzle2 swizzle2Op;
   DualGemmSwizzle4 swizzle4Op;
   DualGemmHalf2Tanh half2TanhOp;
   const std::string tactic;
   bool initialized;
 
-  Impl(const half* weights_, const std::string& tactic_)
-    : weights(weights_), swizzle2Op(), swizzle4Op(), half2TanhOp(),
-      tactic(tactic_), initialized(false)
+  Impl(const half* weights_, const std::string& tactic_, int ffnChannels_)
+    : weights(weights_), ffnChannels(ffnChannels_), swizzle2Op(), swizzle4Op(),
+      half2TanhOp(), tactic(tactic_), initialized(false)
   {}
 
   template<typename Gemm>
   bool applyImpl(Gemm& gemm, const half* input, half* output, int tokens, cudaStream_t stream) {
-    typename Gemm::Arguments args = makeArguments<Gemm>(weights, input, output, tokens);
+    typename Gemm::Arguments args = makeArguments<Gemm>(weights, input, output, tokens, ffnChannels);
     cutlass::Status status;
     if(!initialized) {
       status = gemm.can_implement(args);
@@ -181,9 +187,10 @@ struct Sm89DualGemmSwiGLU::Impl {
 
 Sm89DualGemmSwiGLU::Sm89DualGemmSwiGLU(
   const half* weights,
-  const std::string& tactic
+  const std::string& tactic,
+  int ffnChannels
 )
-  : impl(std::make_unique<Impl>(weights, tactic))
+  : impl(std::make_unique<Impl>(weights, tactic, ffnChannels))
 {}
 
 Sm89DualGemmSwiGLU::~Sm89DualGemmSwiGLU() = default;
@@ -198,7 +205,8 @@ bool Sm89DualGemmSwiGLU::apply(
   cudaStream_t stream
 ) {
   if(batchSize < 1 || seqLen != S || inChannels != Channels ||
-     ffnChannels != FfnChannels || input == nullptr || output == nullptr)
+     ffnChannels != impl->ffnChannels || ffnChannels % FfnChannelAlign != 0 ||
+     input == nullptr || output == nullptr)
     return false;
   return impl->apply(input, output, batchSize * seqLen, stream);
 }

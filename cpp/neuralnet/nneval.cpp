@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <exception>
+#include <map>
 #include <mutex>
 #include <thread>
 
@@ -60,14 +61,33 @@ struct EventPipelineSchedulerState {
   };
 
   Rand rand;
+
+  // Canonical physical GPU owned by this scheduler.
+  int gpuIdx;
+
+  // Global NN server-thread indices assigned to this GPU.
+  // Global indices are retained for tactic-plan lane selection
+  // and per-server-thread statistics.
+  vector<int> serverThreadIdxs;
+
+  // This state contains only slots belonging to gpuIdx.
   vector<SlotState> slots;
+
   BatchState* filling = NULL;
   int fillingSlotIdx = -1;
   int rrCursor = 0;
   bool startupFailed = false;
   string startupFailureMessage;
 
-  explicit EventPipelineSchedulerState(const string& seed) : rand(seed) {}
+  EventPipelineSchedulerState(
+    const string& seed,
+    int gpuIdx_,
+    const vector<int>& serverThreadIdxs_
+  )
+    : rand(seed),
+      gpuIdx(gpuIdx_),
+      serverThreadIdxs(serverThreadIdxs_)
+  {}
 };
 
 static bool parseCudaAsyncInferPipeline(ConfigParser& cfg) {
@@ -272,7 +292,7 @@ NNEvaluator::NNEvaluator(
    postProcessParams(),
    numServerThreadsEverSpawned(0),
    serverThreads(),
-   eventPipelineSchedulerState(NULL),
+   eventPipelineSchedulerStates(),
    maxBatchSize(maxBatchSz),
    m_numRowsProcessed(0),
    m_numBatchesProcessed(0),
@@ -580,10 +600,12 @@ bool NNEvaluator::isAnyThreadUsingFP16() const {
 }
 
 #ifdef USE_CUDA_BACKEND
-void NNEvaluator::serveEventPipelineScheduler(const string& randSeedThisThread) {
-  (void)randSeedThisThread;
-  EventPipelineSchedulerState* state = eventPipelineSchedulerState;
+void NNEvaluator::serveEventPipelineScheduler(
+  EventPipelineSchedulerState* state
+) {
+  // Each invocation owns exactly one physical GPU's lanes.
   testAssert(state != NULL);
+  testAssert(!state->serverThreadIdxs.empty());
 
   auto canonicalGpuIdx = [](int gpuIdx) { return gpuIdx < 0 ? 0 : gpuIdx; };
   auto deleteBatch = [](EventPipelineSchedulerState::BatchState*& batch) {
@@ -799,11 +821,28 @@ void NNEvaluator::serveEventPipelineScheduler(const string& randSeedThisThread) 
 
   bool startupComplete = false;
   try {
-    state->slots.resize(gpuIdxByServerThread.size());
-    for(size_t i = 0; i < gpuIdxByServerThread.size(); i++) {
-      EventPipelineSchedulerState::SlotState& slot = state->slots[i];
-      slot.slotIdx = (int)i;
-      slot.gpuIdx = gpuIdxByServerThread[i];
+    state->slots.resize(state->serverThreadIdxs.size());
+
+    for(size_t i = 0; i < state->serverThreadIdxs.size(); i++) {
+      const int serverThreadIdx = state->serverThreadIdxs[i];
+
+      testAssert(
+        serverThreadIdx >= 0 &&
+        serverThreadIdx < (int)gpuIdxByServerThread.size()
+      );
+
+      EventPipelineSchedulerState::SlotState& slot =
+        state->slots[i];
+
+      // Retain the original global server-thread index.
+      slot.slotIdx = serverThreadIdx;
+      slot.gpuIdx = gpuIdxByServerThread[serverThreadIdx];
+
+      const int canonicalSlotGpuIdx =
+        slot.gpuIdx < 0 ? 0 : slot.gpuIdx;
+
+      testAssert(canonicalSlotGpuIdx == state->gpuIdx);
+
       slot.serverBuf = new NNServerBuf(*this,loadedModel);
       slot.computeStream = NeuralNet::createComputeStream(slot.gpuIdx);
       slot.gpuHandle = NeuralNet::createComputeHandle(
@@ -856,15 +895,36 @@ void NNEvaluator::serveEventPipelineScheduler(const string& randSeedThisThread) 
 
     {
       lock_guard<std::mutex> lock(bufferMutex);
-      serverThreadsIsUsingFP16.assign(state->slots.size(),0);
-      for(const EventPipelineSchedulerState::SlotState& slot : state->slots)
-        serverThreadsIsUsingFP16[slot.slotIdx] = slot.usingFP16 ? 1 : 0;
+
+      // The array was sized globally to numThreads by
+      // spawnServerThreads(). Each scheduler writes only its
+      // own global lane entries.
+      for(
+        const EventPipelineSchedulerState::SlotState& slot :
+        state->slots
+      ) {
+        testAssert(
+          slot.slotIdx >= 0 &&
+          slot.slotIdx < (int)serverThreadsIsUsingFP16.size()
+        );
+
+        serverThreadsIsUsingFP16[slot.slotIdx] =
+          slot.usingFP16 ? 1 : 0;
+      }
+
       numServerThreadsStartingUp--;
       mainThreadWaitingForSpawn.notify_all();
     }
     startupComplete = true;
-    if(logger != NULL)
-      logger->write("CUDA event-gated single-slot scheduler started");
+    if(logger != NULL) {
+      logger->write(
+        "CUDA event-gated scheduler started for GPU " +
+        Global::intToString(state->gpuIdx) +
+        " with " +
+        Global::intToString((int)state->slots.size()) +
+        " inference lanes"
+      );
+    }
 
     NNResultBuf* deferredRequest = NULL;
     while(true) {
@@ -926,11 +986,18 @@ void NNEvaluator::serveEventPipelineScheduler(const string& randSeedThisThread) 
       lock_guard<std::mutex> lock(bufferMutex);
       state->startupFailed = true;
       state->startupFailureMessage = e.what();
-      numServerThreadsStartingUp = 0;
+      // Account for this scheduler without discarding startup
+      // progress from schedulers on other GPUs.
+      numServerThreadsStartingUp--;
       mainThreadWaitingForSpawn.notify_all();
     }
-    else
-      Global::fatalError(string("CUDA event pipeline scheduler failed: ") + e.what());
+    else {
+      Global::fatalError(
+        "CUDA event pipeline scheduler for GPU " +
+        Global::intToString(state->gpuIdx) +
+        " failed: " + e.what()
+      );
+    }
   }
 
   deleteBatch(state->filling);
@@ -1002,19 +1069,81 @@ void NNEvaluator::spawnServerThreads() {
 #ifdef USE_CUDA_BACKEND
   useEventPipelineScheduler = cudaAsyncInferPipeline && !debugSkipNeuralNet;
 #endif
-  if(useEventPipelineScheduler)
-    eventPipelineSchedulerState = new EventPipelineSchedulerState(randSeed + ":EventPipelineScheduler");
-
   if(useEventPipelineScheduler) {
-    numServerThreadsStartingUp = 1;
-    string randSeedThisThread = randSeed + ":NNEvalServerThread:" + Global::intToString(numServerThreadsEverSpawned);
-    numServerThreadsEverSpawned++;
-    std::thread* thread = new std::thread([this,randSeedThisThread]() {
+    testAssert(eventPipelineSchedulerStates.empty());
+
+    // Group global NN server-thread indices by canonical
+    // physical GPU. Each device gets an independent host
+    // scheduler while retaining the original lane indices.
+    map<int,vector<int>> serverThreadIdxsByGpu;
+
+    for(
+      int serverThreadIdx = 0;
+      serverThreadIdx < numThreads;
+      serverThreadIdx++
+    ) {
+      const int configuredGpuIdx =
+        gpuIdxByServerThread[serverThreadIdx];
+
+      const int canonicalGpuIdx =
+        configuredGpuIdx < 0 ? 0 : configuredGpuIdx;
+
+      serverThreadIdxsByGpu[canonicalGpuIdx].push_back(
+        serverThreadIdx
+      );
+    }
+
+    eventPipelineSchedulerStates.reserve(
+      serverThreadIdxsByGpu.size()
+    );
+
+    for(const auto& entry : serverThreadIdxsByGpu) {
+      const int gpuIdx = entry.first;
+      const vector<int>& serverThreadIdxs = entry.second;
+
+      const string schedulerSeed =
+        randSeed +
+        ":EventPipelineScheduler:GPU:" +
+        Global::intToString(gpuIdx) +
+        ":Spawn:" +
+        Global::intToString(
+          numServerThreadsEverSpawned
+        );
+
+      numServerThreadsEverSpawned++;
+
+      EventPipelineSchedulerState* state =
+        new EventPipelineSchedulerState(
+          schedulerSeed,
+          gpuIdx,
+          serverThreadIdxs
+        );
+
+      eventPipelineSchedulerStates.push_back(state);
+    }
+
+    testAssert(!eventPipelineSchedulerStates.empty());
+
+    numServerThreadsStartingUp =
+      (int)eventPipelineSchedulerStates.size();
+
+    // Input preparation, CUDA event polling, output
+    // postprocessing, and notifications now proceed in
+    // parallel across physical GPUs.
+    for(
+      EventPipelineSchedulerState* state :
+      eventPipelineSchedulerStates
+    ) {
+      std::thread* thread = new std::thread(
+        [this,state]() {
 #ifdef USE_CUDA_BACKEND
-      serveEventPipelineScheduler(randSeedThisThread);
+          serveEventPipelineScheduler(state);
 #endif
-    });
-    serverThreads.push_back(thread);
+        }
+      );
+
+      serverThreads.push_back(thread);
+    }
   }
   else {
     numServerThreadsStartingUp = numThreads;
@@ -1032,13 +1161,36 @@ void NNEvaluator::spawnServerThreads() {
   unique_lock<std::mutex> lock(bufferMutex);
   while(numServerThreadsStartingUp > 0)
     mainThreadWaitingForSpawn.wait(lock);
-  bool startupFailed = eventPipelineSchedulerState != NULL && eventPipelineSchedulerState->startupFailed;
-  string startupFailureMessage = startupFailed ?
-    eventPipelineSchedulerState->startupFailureMessage : string();
+  bool startupFailed = false;
+  string startupFailureMessage;
+
+  for(
+    const EventPipelineSchedulerState* state :
+    eventPipelineSchedulerStates
+  ) {
+    if(!state->startupFailed)
+      continue;
+
+    startupFailed = true;
+
+    if(!startupFailureMessage.empty())
+      startupFailureMessage += "; ";
+
+    startupFailureMessage +=
+      "GPU " +
+      Global::intToString(state->gpuIdx) +
+      ": " +
+      state->startupFailureMessage;
+  }
+
   lock.unlock();
+
   if(startupFailed) {
     killServerThreads();
-    throw StringError("Failed to start CUDA event pipeline scheduler: " + startupFailureMessage);
+    throw StringError(
+      "Failed to start one or more CUDA event pipeline "
+      "schedulers: " + startupFailureMessage
+    );
   }
 }
 
@@ -1057,8 +1209,16 @@ void NNEvaluator::killServerThreads() {
     delete serverThreads[i];
   serverThreads.clear();
   serverThreadsIsUsingFP16.clear();
-  delete eventPipelineSchedulerState;
-  eventPipelineSchedulerState = NULL;
+  // All scheduler threads have joined, so their
+  // per-device state can now be released safely.
+  for(
+    EventPipelineSchedulerState* state :
+    eventPipelineSchedulerStates
+  ) {
+    delete state;
+  }
+
+  eventPipelineSchedulerStates.clear();
 
   // Can unset now that threads are dead
   isKilled = false;

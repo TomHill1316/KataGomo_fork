@@ -312,7 +312,15 @@ class NNEvaluator {
 
   int numServerThreadsEverSpawned;
   std::vector<std::thread*> serverThreads;
-  EventPipelineSchedulerState* eventPipelineSchedulerState;
+
+  // One scheduler state per canonical physical GPU.
+  //
+  // The former implementation stored one process-wide state,
+  // serializing host-side preparation, CUDA event polling, output
+  // postprocessing, and result notification across all devices.
+  // Scheduler threads are joined before these states are deleted.
+  std::vector<EventPipelineSchedulerState*>
+    eventPipelineSchedulerStates;
 
   const int maxBatchSize;
 
@@ -370,7 +378,10 @@ class NNEvaluator {
   // Helper, for internal use only
   void serve(NNServerBuf& buf, Rand& rand, int gpuIdxForThisThread, int serverThreadIdx);
 #ifdef USE_CUDA_BACKEND
-  void serveEventPipelineScheduler(const std::string& randSeedThisThread);
+  // Run the event pipeline for one physical GPU's lane set.
+  void serveEventPipelineScheduler(
+    EventPipelineSchedulerState* state
+  );
 #endif
 };
 

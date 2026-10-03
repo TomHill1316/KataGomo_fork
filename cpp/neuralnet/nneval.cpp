@@ -36,6 +36,10 @@ struct EventPipelineSchedulerState {
   struct BatchState {
     vector<NNResultBuf*> requests;
     vector<NNOutput*> outputs;
+
+    // Set when the first real request enters this batch. It is read only
+    // while the batch remains in the scheduler's filling state.
+    std::chrono::steady_clock::time_point firstRequestTime;
   };
   struct SlotState {
     int slotIdx = -1;
@@ -281,6 +285,11 @@ NNEvaluator::NNEvaluator(
    cudaEventPipelineUseGraph(
      cfg.contains("cudaEventPipelineUseGraph") ? cfg.getBool("cudaEventPipelineUseGraph") : false
    ),
+   cudaEventPipelineBatchFillMicros(
+     cfg.contains("cudaEventPipelineBatchFillMicros") ?
+       cfg.getInt("cudaEventPipelineBatchFillMicros",0,1000000) :
+       0
+   ),
    computeContext(NULL),
    loadedModel(NULL),
    nnCacheTable(NULL),
@@ -346,6 +355,15 @@ NNEvaluator::NNEvaluator(
       "CUDA event-gated inference pipeline is " +
       string(cudaAsyncInferPipeline ? "enabled" : "disabled")
     );
+
+    if(cudaAsyncInferPipeline && batchAwareDispatch) {
+      logger->write(
+        "CUDA event-pipeline partial-batch fill grace is " +
+        Global::intToString(cudaEventPipelineBatchFillMicros) +
+        " microseconds"
+      );
+    }
+
     if(cudaEventPipelineUseGraph)
       logger->write("CUDA exact-shape event-pipeline graph replay is enabled");
     if(cudaAsyncInferPipeline && numThreads < 2)
@@ -762,13 +780,58 @@ void NNEvaluator::serveEventPipelineScheduler(
   auto maybeLaunchFillingBatch = [&]() {
     if(state->filling == NULL || state->filling->requests.empty())
       return false;
-    EventPipelineSchedulerState::SlotState& slot = state->slots[state->fillingSlotIdx];
-    int desiredBatchSize = std::min(maxBatchSize,currentBatchSize.load(std::memory_order_acquire));
-    bool full = (int)state->filling->requests.size() >= desiredBatchSize;
-    bool shouldLaunch = batchAwareDispatch ?
-      full || deviceIsIdle(slot.gpuIdx) : full || queryQueue.size() == 0;
+
+    EventPipelineSchedulerState::SlotState& slot =
+      state->slots[state->fillingSlotIdx];
+
+    const int desiredBatchSize = std::min(
+      maxBatchSize,
+      currentBatchSize.load(std::memory_order_acquire)
+    );
+
+    const bool full =
+      (int)state->filling->requests.size() >= desiredBatchSize;
+
+    bool shouldLaunch = false;
+
+    if(!batchAwareDispatch) {
+      // Preserve the existing variable-shape behavior.
+      shouldLaunch = full || queryQueue.size() == 0;
+    }
+    else if(full) {
+      // A full batch must never wait for the grace deadline.
+      shouldLaunch = true;
+    }
+    else if(cudaEventPipelineBatchFillMicros <= 0) {
+      // Zero is the v4 compatibility mode.
+      shouldLaunch = deviceIsIdle(slot.gpuIdx);
+    }
+    else if(deviceIsIdle(slot.gpuIdx)) {
+      // Do not launch a partial batch while requests are visibly waiting
+      // in the shared queue. Let this or another per-GPU scheduler consume
+      // those requests first.
+      const bool queueDrained = queryQueue.size() == 0;
+
+      if(queueDrained) {
+        // On shutdown, do not make killServerThreads wait for the grace
+        // deadline once the shared request queue has been drained.
+        const bool shuttingDown = queryQueue.isReadOnly();
+
+        const auto waitedMicros =
+          std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() -
+            state->filling->firstRequestTime
+          ).count();
+
+        shouldLaunch =
+          shuttingDown ||
+          waitedMicros >= cudaEventPipelineBatchFillMicros;
+      }
+    }
+
     if(!shouldLaunch || !slotCanAccept(slot))
       return false;
+
     launchFillingBatch();
     return true;
   };
@@ -962,6 +1025,14 @@ void NNEvaluator::serveEventPipelineScheduler(
             (void)maybeLaunchFillingBatch();
           }
           else {
+            if(
+              state->filling->requests.empty() &&
+              cudaEventPipelineBatchFillMicros > 0
+            ) {
+              state->filling->firstRequestTime =
+                std::chrono::steady_clock::now();
+            }
+
             state->filling->requests.push_back(request);
             (void)maybeLaunchFillingBatch();
           }

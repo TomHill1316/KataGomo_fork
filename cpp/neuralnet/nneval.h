@@ -298,6 +298,10 @@ class NNEvaluator {
   const bool cudaAsyncInferPipeline;
   const bool cudaEventPipelineUseGraph;
 
+  // Maximum time an idle fixed-shape partial batch may wait for more requests before being launched.
+  // Zero preserves the validated v4 immediate-launch behavior.
+  const int cudaEventPipelineBatchFillMicros;
+
   ComputeContext* computeContext;
   LoadedModel* loadedModel;
   NNCacheTable* nnCacheTable;

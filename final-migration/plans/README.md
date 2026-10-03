@@ -14,6 +14,12 @@ Current assets:
 
 - `sm89/rtx4090d-b12-s2/best-tactic-plan.json`: certified RTX 4090 D, exact
   B12, two streams per device.
+- `sm89/rtx4090d-b12-s2-pruned/best-tactic-plan.json`: the same certified
+  plan with `target.model_sha256` rebound to an FFN-pruned weight of the same
+  structure. Tactic selections and certification fields are inherited
+  unchanged and were not independently re-validated for the pruned weight;
+  the pairing measurement behind that decision, and the binary requirement,
+  are recorded in that directory's README.
 
 No SM120 plan is checked in yet. The pre-unification RTX 5080 plan is not
 production-ready and is intentionally excluded.

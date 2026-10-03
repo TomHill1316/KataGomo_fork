@@ -235,6 +235,17 @@ The loader supplies and verifies exact B12, exact 19x19, FP16/NHWC,
 `nnBatchAwareDispatch=true`, maximum-batch-only warmup, and every planned CUDA
 override. A conflicting user value is rejected.
 
+A second checked-in plan,
+`final-migration/plans/sm89/rtx4090d-b12-s2-pruned/best-tactic-plan.json`, is
+the same certified plan with `target.model_sha256` rebound to an FFN-pruned
+weight of the same structure. Tactic selections and certification fields are
+inherited unchanged and were not independently re-validated for that weight.
+Loading it requires a binary carrying the runtime FFN-width patch, and the
+model path must point at the `.bin.gz` file whose SHA-256 the plan binds. See
+that directory's README for the pairing measurement behind the decision and
+[`records/prune-sched-sm89-20261003.md`](records/prune-sched-sm89-20261003.md)
+for the full record.
+
 A useful initial search-thread budget is:
 
 ```text
@@ -360,6 +371,8 @@ The complete optimization-history audit is in
 [OPTIMIZATION_HISTORY_AUDIT_20260808.md](OPTIMIZATION_HISTORY_AUDIT_20260808.md).
 The SM89 runtime certificate is in
 [records/plan-runtime-sm89-20260809.md](records/plan-runtime-sm89-20260809.md).
+The FFN-pruned weight and per-GPU scheduler work is in
+[records/prune-sched-sm89-20261003.md](records/prune-sched-sm89-20261003.md).
 
 ## Known boundaries
 

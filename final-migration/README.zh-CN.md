@@ -218,6 +218,15 @@ loader 会提供并验证精确 B12、精确 19x19、FP16/NHWC、
 `nnBatchAwareDispatch=true`、只对最大 batch warmup，以及全部 CUDA tactic
 override。用户配置与 plan 冲突时会报错，不会静默覆盖。
 
+仓库内第二份 plan
+`final-migration/plans/sm89/rtx4090d-b12-s2-pruned/best-tactic-plan.json`
+是把同一份已认证 plan 的 `target.model_sha256` 改绑到**同结构 FFN 剪枝权重**
+的派生版本。tactic 选择与认证字段原样继承，**未**针对该权重独立复核。加载它
+需要带运行期 FFN 宽度补丁的二进制，且模型路径必须指向 plan 所绑定的
+`.bin.gz`（绑定的是压缩文件哈希）。该目录的 README 记录了做出这一判断所依据的
+配对测量，完整记录见
+[`records/prune-sched-sm89-20261003.md`](records/prune-sched-sm89-20261003.md)。
+
 搜索线程数量可从以下公式开始调节：
 
 ```text
@@ -335,7 +344,9 @@ AUTOTUNE_CORPUS_MANIFEST=/path/to/8192-full19.manifest.json \
 完整优化历史审计见
 [OPTIMIZATION_HISTORY_AUDIT_20260808.md](OPTIMIZATION_HISTORY_AUDIT_20260808.md)，
 SM89 runtime 认证见
-[records/plan-runtime-sm89-20260809.md](records/plan-runtime-sm89-20260809.md)。
+[records/plan-runtime-sm89-20260809.md](records/plan-runtime-sm89-20260809.md)，
+FFN 剪枝权重与 per-GPU scheduler 工作见
+[records/prune-sched-sm89-20261003.md](records/prune-sched-sm89-20261003.md)。
 
 ## 已知边界
 

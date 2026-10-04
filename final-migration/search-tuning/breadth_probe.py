@@ -176,12 +176,23 @@ def run_position(args, moves, logdir):
     logs = sorted(os.path.join(logdir, f) for f in os.listdir(logdir))
     if not logs:
         return None, "empty logdir; stderr tail: " + (p.stderr or "")[-500:]
-    with open(logs[-1], "r", errors="replace") as fh:
-        text = fh.read()
 
-    pairs = parse_tree_block(text)
-    if not pairs:
-        return None, "no Tree block; stderr tail: " + (p.stderr or "")[-500:]
+    # ⚠️ 实测踩过：logdir 里可能残留**别的进程**写的日志文件（例如 base cfg 里
+    # logDir 指向同一目录的另一次 katago 调用，或者 rmtree 失败）。原来直接取
+    # sorted()[-1] 会读到那个残留文件，于是报 "no Tree block" —— 看起来像搜索失败，
+    # 其实是读错了文件（1M 访问那次就是这么误判的）。
+    # 改为：从新到旧扫，取第一个**真的含 Tree 段**的文件。
+    text, used = None, None
+    for path in reversed(logs):
+        with open(path, "r", errors="replace") as fh:
+            cand = fh.read()
+        if parse_tree_block(cand):
+            text, used = cand, path
+            break
+    if text is None:
+        return None, ("no Tree block in %d log file(s) %s; stderr tail: "
+                      % (len(logs), [os.path.basename(x) for x in logs])
+                      + (p.stderr or "")[-300:])
 
     rm = ROOT_VISITS_RE.search(text)
     root_visits = int(rm.group(1)) if rm else sum(v for _, v in pairs)

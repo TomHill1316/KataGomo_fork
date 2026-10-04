@@ -21,6 +21,7 @@ SearchParams::SearchParams()
    cpuctExploration(1.0),
    cpuctExplorationLog(0.0),
    cpuctExplorationBase(500),
+   cpuctExplorationFloorCoeff(0.0),
    cpuctUtilityStdevPrior(0.25),
    cpuctUtilityStdevPriorWeight(1.0),
    cpuctUtilityStdevScale(0.0),
@@ -52,6 +53,8 @@ SearchParams::SearchParams()
    rootNumSymmetriesToSample(1),
    rootSymmetryPruning(false),
    rootDesiredPerChildVisitsCoeff(0.0),
+   rootMinVisitShare(0.0),
+   rootMinVisitSharePolicyMin(0.02),
    rootPolicyOptimism(0.0),
    chosenMoveTemperature(0.0),
    chosenMoveTemperatureEarly(0.0),
@@ -137,6 +140,7 @@ bool SearchParams::operator==(const SearchParams& other) const {
     cpuctExploration == other.cpuctExploration &&
     cpuctExplorationLog == other.cpuctExplorationLog &&
     cpuctExplorationBase == other.cpuctExplorationBase &&
+    cpuctExplorationFloorCoeff == other.cpuctExplorationFloorCoeff &&
 
     cpuctUtilityStdevPrior == other.cpuctUtilityStdevPrior &&
     cpuctUtilityStdevPriorWeight == other.cpuctUtilityStdevPriorWeight &&
@@ -176,6 +180,8 @@ bool SearchParams::operator==(const SearchParams& other) const {
     rootNumSymmetriesToSample == other.rootNumSymmetriesToSample &&
     rootSymmetryPruning == other.rootSymmetryPruning &&
     rootDesiredPerChildVisitsCoeff == other.rootDesiredPerChildVisitsCoeff &&
+    rootMinVisitShare == other.rootMinVisitShare &&
+    rootMinVisitSharePolicyMin == other.rootMinVisitSharePolicyMin &&
 
     rootPolicyOptimism == other.rootPolicyOptimism &&
 
@@ -392,6 +398,7 @@ json SearchParams::changeableParametersToJson() const {
   ret["cpuctExploration"] = cpuctExploration;
   ret["cpuctExplorationLog"] = cpuctExplorationLog;
   ret["cpuctExplorationBase"] = cpuctExplorationBase;
+  ret["cpuctExplorationFloorCoeff"] = cpuctExplorationFloorCoeff;
 
   ret["cpuctUtilityStdevPrior"] = cpuctUtilityStdevPrior;
   ret["cpuctUtilityStdevPriorWeight"] = cpuctUtilityStdevPriorWeight;
@@ -431,6 +438,8 @@ json SearchParams::changeableParametersToJson() const {
   ret["rootNumSymmetriesToSample"] = rootNumSymmetriesToSample;
   ret["rootSymmetryPruning"] = rootSymmetryPruning;
   ret["rootDesiredPerChildVisitsCoeff"] = rootDesiredPerChildVisitsCoeff;
+  ret["rootMinVisitShare"] = rootMinVisitShare;
+  ret["rootMinVisitSharePolicyMin"] = rootMinVisitSharePolicyMin;
 
   ret["rootPolicyOptimism"] = rootPolicyOptimism;
 
@@ -572,6 +581,7 @@ void SearchParams::printParams(std::ostream& out) const {
   PRINTPARAM(cpuctExploration);
   PRINTPARAM(cpuctExplorationLog);
   PRINTPARAM(cpuctExplorationBase);
+  PRINTPARAM(cpuctExplorationFloorCoeff);
 
   PRINTPARAM(cpuctUtilityStdevPrior);
   PRINTPARAM(cpuctUtilityStdevPriorWeight);
@@ -616,6 +626,8 @@ void SearchParams::printParams(std::ostream& out) const {
   PRINTPARAM(rootSymmetryPruning);
 
   PRINTPARAM(rootDesiredPerChildVisitsCoeff);
+  PRINTPARAM(rootMinVisitShare);
+  PRINTPARAM(rootMinVisitSharePolicyMin);
 
   PRINTPARAM(rootPolicyOptimism);
 

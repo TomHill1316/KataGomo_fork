@@ -505,6 +505,9 @@ vector<SearchParams> Setup::loadParams(
     if(cfg.contains("cpuctExplorationBase"+idxStr)) params.cpuctExplorationBase = cfg.getDouble("cpuctExplorationBase"+idxStr, 10.0, 100000.0);
     else if(cfg.contains("cpuctExplorationBase"))   params.cpuctExplorationBase = cfg.getDouble("cpuctExplorationBase",        10.0, 100000.0);
     else                                            params.cpuctExplorationBase = 500.0;
+    if(cfg.contains("cpuctExplorationFloorCoeff"+idxStr)) params.cpuctExplorationFloorCoeff = cfg.getDouble("cpuctExplorationFloorCoeff"+idxStr, 0.0, 100.0);
+    else if(cfg.contains("cpuctExplorationFloorCoeff"))   params.cpuctExplorationFloorCoeff = cfg.getDouble("cpuctExplorationFloorCoeff",        0.0, 100.0);
+    else                                                  params.cpuctExplorationFloorCoeff = 0.0;
 
     if(cfg.contains("cpuctUtilityStdevPrior"+idxStr)) params.cpuctUtilityStdevPrior = cfg.getDouble("cpuctUtilityStdevPrior"+idxStr, 1e-8, 10.0);
     else if(cfg.contains("cpuctUtilityStdevPrior"))   params.cpuctUtilityStdevPrior = cfg.getDouble("cpuctUtilityStdevPrior",        1e-8, 10.0);
@@ -616,6 +619,12 @@ vector<SearchParams> Setup::loadParams(
     if(cfg.contains("rootDesiredPerChildVisitsCoeff"+idxStr)) params.rootDesiredPerChildVisitsCoeff = cfg.getDouble("rootDesiredPerChildVisitsCoeff"+idxStr, 0.0, 100.0);
     else if(cfg.contains("rootDesiredPerChildVisitsCoeff"))   params.rootDesiredPerChildVisitsCoeff = cfg.getDouble("rootDesiredPerChildVisitsCoeff",        0.0, 100.0);
     else                                                      params.rootDesiredPerChildVisitsCoeff = 0.0;
+    if(cfg.contains("rootMinVisitShare"+idxStr)) params.rootMinVisitShare = cfg.getDouble("rootMinVisitShare"+idxStr, 0.0, 1.0);
+    else if(cfg.contains("rootMinVisitShare"))   params.rootMinVisitShare = cfg.getDouble("rootMinVisitShare",        0.0, 1.0);
+    else                                         params.rootMinVisitShare = 0.0;
+    if(cfg.contains("rootMinVisitSharePolicyMin"+idxStr)) params.rootMinVisitSharePolicyMin = cfg.getDouble("rootMinVisitSharePolicyMin"+idxStr, 0.0, 1.0);
+    else if(cfg.contains("rootMinVisitSharePolicyMin"))   params.rootMinVisitSharePolicyMin = cfg.getDouble("rootMinVisitSharePolicyMin",        0.0, 1.0);
+    else                                                  params.rootMinVisitSharePolicyMin = 0.02;
 
     if(cfg.contains("rootPolicyOptimism"+idxStr)) params.rootPolicyOptimism = cfg.getDouble("rootPolicyOptimism"+idxStr, 0.0, 1.0);
     else if(cfg.contains("rootPolicyOptimism"))   params.rootPolicyOptimism = cfg.getDouble("rootPolicyOptimism",        0.0, 1.0);

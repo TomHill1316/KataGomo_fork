@@ -22,8 +22,19 @@ static constexpr double TOTALCHILDWEIGHT_PUCT_OFFSET = 0.01;
 double Search::getExploreScaling(
   double totalChildWeight, double parentUtilityStdevFactor
 ) const {
+  double cpuct = cpuctExploration(totalChildWeight, searchParams);
+  //Floor the effective cpuct at cpuctExplorationFloorCoeff * sqrt(N). The search's implicit resolution
+  //in utility is roughly cpuct/sqrt(N), which decays without bound as N grows; flooring cpuct this way
+  //makes the resolution converge to cpuctExplorationFloorCoeff instead of 0, so that at very high
+  //playout counts the search stops subdividing value differences that are smaller than the neural
+  //net's systematic error. Disabled at 0.0, in which case this is bit-for-bit the old behavior.
+  if(searchParams.cpuctExplorationFloorCoeff > 0.0) {
+    double floorCpuct = searchParams.cpuctExplorationFloorCoeff * sqrt(totalChildWeight);
+    if(floorCpuct > cpuct)
+      cpuct = floorCpuct;
+  }
   return
-    cpuctExploration(totalChildWeight, searchParams)
+    cpuct
     * sqrt(totalChildWeight + TOTALCHILDWEIGHT_PUCT_OFFSET)
     * parentUtilityStdevFactor;
 }
@@ -165,6 +176,16 @@ double Search::getExploreSelectionValueOfChild(
     //Hack to get the root to funnel more visits down child branches
     if(searchParams.rootDesiredPerChildVisitsCoeff > 0.0) {
       if(nnPolicyProb > 0 && childWeight < sqrt(nnPolicyProb * totalChildWeight * searchParams.rootDesiredPerChildVisitsCoeff)) {
+        return 1e20;
+      }
+    }
+    //Unlike the above, this enforces a share of the root that does not decay with N: force any root
+    //child with a non-trivial policy prob to be searched until it holds at least rootMinVisitShare of
+    //the root's total child weight. This is what keeps the root from collapsing onto one or two moves
+    //at very high playout counts, which is what destroys tree reuse when the opponent deviates.
+    if(searchParams.rootMinVisitShare > 0.0) {
+      if(nnPolicyProb >= searchParams.rootMinVisitSharePolicyMin &&
+         childWeight < searchParams.rootMinVisitShare * totalChildWeight) {
         return 1e20;
       }
     }

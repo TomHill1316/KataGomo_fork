@@ -355,6 +355,21 @@ $$MULTIPLE_GPUS
 # cpuctExploration = 1.0
 # cpuctExplorationLog = 0.45
 
+# Floor on the effective cpuct, as a coefficient of sqrt(total visits). The search's implicit
+# resolution in utility is about cpuct/sqrt(N), which keeps shrinking as N grows even with
+# cpuctExplorationLog, so at very high playout counts the search ends up subdividing value
+# differences that are smaller than the neural net's own systematic error, and the root
+# distribution collapses onto one or two moves. Setting this to k floors the resolution at about k.
+# 0.0 disables it (the historical behavior). Values around 0.01 to 0.05 are meaningful.
+# cpuctExplorationFloorCoeff = 0.0
+
+# Force every root child whose policy prob is at least rootMinVisitSharePolicyMin to be searched
+# until it holds at least this share of the root's total child weight. Unlike
+# rootDesiredPerChildVisitsCoeff, this share does not decay with the total number of visits, so it
+# keeps the root distribution from collapsing at very high playout counts. 0.0 disables it.
+# rootMinVisitShare = 0.0
+# rootMinVisitSharePolicyMin = 0.02
+
 # Parameters that control exploring more in volatile positions, exploring
 # less in stable positions.
 # cpuctUtilityStdevPrior = 0.40

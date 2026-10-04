@@ -22,6 +22,12 @@ struct SearchParams {
   double cpuctExploration;  //Constant factor on exploration, should also scale up linearly with magnitude of utility
   double cpuctExplorationLog; //Constant factor on log-scaling exploration, should also scale up linearly with magnitude of utility
   double cpuctExplorationBase; //Scale of number of visits at which log behavior starts having an effect
+  //Floor on the effective cpuct, as a coefficient of sqrt(totalChildWeight). The search's implicit
+  //resolution in utility is about effCpuct/sqrt(N), which shrinks without bound as N grows even with
+  //cpuctExplorationLog. Setting this to k makes the resolution floor out at about k, so that at high
+  //playout counts the search stops subdividing differences smaller than the neural net's systematic
+  //value bias. 0.0 = disabled (exactly the historical behavior).
+  double cpuctExplorationFloorCoeff;
 
   double cpuctUtilityStdevPrior;
   double cpuctUtilityStdevPriorWeight;
@@ -67,6 +73,14 @@ struct SearchParams {
   bool rootSymmetryPruning; //For the root node, search only one copy of each symmetrically equivalent move.
   //We use the min of these two together, and also excess visits get pruned if the value turns out bad.
   double rootDesiredPerChildVisitsCoeff; //Funnel sqrt(this * policy prob * total visits) down any given child that receives any visits at all at the root
+  //Unlike rootDesiredPerChildVisitsCoeff (whose required share decays as 1/sqrt(N)), this enforces a
+  //share of root visits that does NOT decay: every root child whose policy prob is at least
+  //rootMinVisitSharePolicyMin is forced to be searched until its share of total root child weight
+  //reaches rootMinVisitShare. This keeps the root distribution from collapsing onto one or two moves
+  //at very high playout counts, which is what makes tree reuse collapse when the opponent deviates.
+  //0.0 = disabled (exactly the historical behavior).
+  double rootMinVisitShare;
+  double rootMinVisitSharePolicyMin; //Only apply rootMinVisitShare to root children with at least this raw policy probability.
 
   double rootPolicyOptimism; //Interpolate geometrically between raw policy and optimistic policy
 

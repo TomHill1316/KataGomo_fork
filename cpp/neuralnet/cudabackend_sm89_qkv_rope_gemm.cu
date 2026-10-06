@@ -21,8 +21,12 @@ namespace Sm89Backend {
 namespace {
 
 constexpr int S = 361;
-constexpr int Channels = 384;
-constexpr int Heads = 12;
+// PATCH(b15-shape): was Channels = 384 / Heads = 12 (b11c768). b15c1024 runs the
+// attention at 512 mid channels with 16 heads of dim 32 (16*32 == 512). GemmBatch
+// stays 3 (Q/K/V). The RoPE iterator indexes the cos/sin table as
+// [xy][head*pairs + pair] with head*pairs == Channels/2, which holds for both.
+constexpr int Channels = 512;
+constexpr int Heads = 16;
 constexpr int HeadDim = 32;
 constexpr int GemmBatch = 3;
 

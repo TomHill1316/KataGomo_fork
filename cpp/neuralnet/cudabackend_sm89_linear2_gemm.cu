@@ -25,11 +25,16 @@ constexpr int S = 361;
 // models need the linear2 reduction dim at runtime; the CUTLASS tile shapes and the
 // 8-half alignment constraint stay compile-time.
 constexpr int Linear2InAlign = 8;
-constexpr int OutChannels = 384;
-constexpr int AttentionChannels = 384;
-constexpr int PreConvInChannels = 768;
-constexpr int PostConvInChannels = 384;
-constexpr int PostConvOutChannels = 768;
+// PATCH(b15-shape): was 384/384/768/384/768 (b11c768). b15c1024 has trunk 1024,
+// mid 512. `OutChannels` / `AttentionChannels` are the mid width (also the bound
+// baked into ResidualBnOutputTileIterator<..., N>), `PostConvIn/Out` are mid->trunk.
+// PreConvInChannels is gone: Sm89PreConvGemm is shared by the nested-block preConv
+// (trunk->mid) and the wide-head projection (trunk->384), so its in/out are now
+// runtime constructor parameters (see Sm89PreConvGemm below).
+constexpr int OutChannels = 512;
+constexpr int AttentionChannels = 512;
+constexpr int PostConvInChannels = 512;
+constexpr int PostConvOutChannels = 1024;
 
 using Element = cutlass::half_t;
 using Epilogue = cutlass::epilogue::thread::LinearCombination<Element, 8, Element, float>;
@@ -517,19 +522,25 @@ bool Sm89OutProjGemm::applyAccumulate(
 
 struct Sm89PreConvGemm::Impl {
   std::unique_ptr<GemmRunner> runner;
+  // PATCH(b15-shape): the same class serves two different problem shapes --
+  // nested-block preConv (trunk->mid) and the wide-head projection (trunk->384).
+  // Both move to runtime members so one binary can hold both.
+  const int inChannels;
+  const int outChannels;
 
-  Impl(const half* weights, const std::string& tactic)
-    : runner(makePreConvRunner(weights, tactic)) {}
+  Impl(const half* weights, const std::string& tactic, int inChannels_, int outChannels_)
+    : runner(makePreConvRunner(weights, tactic)),
+      inChannels(inChannels_), outChannels(outChannels_) {}
 
   bool apply(const half* input, half* output, int tokens, cudaStream_t stream) {
     return runner != nullptr && runner->run(
-      input, output, tokens, PreConvInChannels, OutChannels, 0.0f, stream);
+      input, output, tokens, inChannels, outChannels, 0.0f, stream);
   }
 };
 
 Sm89PreConvGemm::Sm89PreConvGemm(
-  const half* weights, const std::string& tactic)
-  : impl(std::make_unique<Impl>(weights, tactic))
+  const half* weights, const std::string& tactic, int inChannels, int outChannels)
+  : impl(std::make_unique<Impl>(weights, tactic, inChannels, outChannels))
 {}
 
 Sm89PreConvGemm::~Sm89PreConvGemm() = default;
@@ -543,8 +554,8 @@ bool Sm89PreConvGemm::apply(
   int outChannels,
   cudaStream_t stream
 ) {
-  if(batchSize < 1 || seqLen != S || inChannels != PreConvInChannels ||
-     outChannels != OutChannels || input == nullptr || output == nullptr)
+  if(batchSize < 1 || seqLen != S || inChannels != impl->inChannels ||
+     outChannels != impl->outChannels || input == nullptr || output == nullptr)
     return false;
   return impl->apply(input, output, batchSize * seqLen, stream);
 }

@@ -14,7 +14,10 @@ namespace Sm89Backend {
 namespace {
 
 constexpr int S = 361;
-constexpr int H = 12;
+// PATCH(b15-shape): was `constexpr int H = 12` (b11c768). b15c1024 has 16 heads.
+// H is NOT a flash-attention template parameter -- the SASS is unchanged; H only
+// feeds the host-side strides and p.h. D stays 32 (both models use D32 heads).
+constexpr int H = 16;
 constexpr int D = 32;
 
 Flash_fwd_params makeParams(

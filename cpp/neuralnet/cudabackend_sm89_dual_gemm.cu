@@ -20,7 +20,9 @@ namespace Sm89Backend {
 namespace {
 
 constexpr int S = 361;
-constexpr int Channels = 384;
+// PATCH(b15-shape): was `constexpr int Channels = 384` (b11c768 mid channels).
+// b15c1024 runs the dual FFN at 512 mid channels.
+constexpr int Channels = 512;
 // PATCH(prune-width): was `constexpr int FfnChannels = 1152`. Variable-width FFN
 // models need the width at runtime. Only the problem shape and the leading
 // dimensions move to runtime; the CUTLASS tile shapes and the AlignmentA/B = 8

@@ -1235,9 +1235,12 @@ struct Sm89AttentionBlock {
       }
     }
 #ifdef KATAGO_ENABLE_SM89_QKV_ROPE_GEMM
+    // PATCH(b15-shape): was inChannels==384 / numHeads==12 / numKVHeads==12 (b11c768).
+    // b15c1024 runs attention at 512 mid channels with 16 heads of dim 32 (16*32 == 512).
+    // D stays 32 -- both models use D32 heads.
     if(useQKVRoPEGemm && useQKVBatched && ropeFreqsBuf != NULL &&
-       nnXLen == 19 && nnYLen == 19 && inChannels == 384 &&
-      numHeads == 12 && numKVHeads == 12 && qHeadDim == 32 && vHeadDim == 32) {
+       nnXLen == 19 && nnYLen == 19 && inChannels == 512 &&
+      numHeads == 16 && numKVHeads == 16 && qHeadDim == 32 && vHeadDim == 32) {
       qkvRopeGemm = std::make_unique<Sm89Backend::Sm89QKVRoPEGemm>(
         (const half*)qkvWeightsBuf, ropeFreqsBuf, ropeCosSinTable,
         useSplitQKVRoPEGemm_,
@@ -1614,8 +1617,12 @@ struct Sm89FFNBlock {
           ctx->dualFfnAotTactic
         );
       if(tactic != nullptr) {
+        // PATCH(b15-shape): numChannels 384 -> 512 (b11c768 -> b15c1024 mid).
+        // ffnChannels stays 1152: the AOT artifact was built for the b11 FFN width, and
+        // every b15 FFN width differs, so this is a fail-closed guard. The plan keeps
+        // cudaFusedFFNAotTacticSm89=disabled, so the guard is never reached in practice.
         if(!usingFP16 || !useFFNBatched || ffnWeightsBuf == nullptr ||
-           numChannels != 384 || ffnChannels != 1152 || seqLen != 361)
+           numChannels != 512 || ffnChannels != 1152 || seqLen != 361)
           throw StringError("Selected SM89 dual-FFN tactic does not support this model shape");
         CUDA_ERR(name.c_str(),tactic->launch(
           (const half*)trunkScratchBuf,
@@ -1695,8 +1702,10 @@ struct Sm89FFNBlock {
           ctx->linear2AotTactic
         );
       if(linear2AotTactic != nullptr &&
+         // PATCH(b15-shape): numChannels 384 -> 512. ffnChannels stays 1152 (b11 AOT
+         // artifact width); fail-closed, and the plan disables cudaLinear2AotTacticSm89.
          (!usingFP16 || !useFusedResidual || ffnChannels != 1152 ||
-          numChannels != 384 || seqLen != 361))
+          numChannels != 512 || seqLen != 361))
         throw StringError("Selected SM89 linear2 tactic does not support this model shape");
     }
 #endif
@@ -1868,8 +1877,11 @@ struct Sm89NestedBlock {
   {
 #ifdef KATAGO_ENABLE_SM89_PRECONV_GEMM
     if(usePreConvGemm_ && useFP16 && preConv.use1x1Matmul && preConv.matmulWeightBuf != nullptr)
+      // PATCH(b15-shape): preConv channels are now runtime (trunk -> mid: 1024 -> 512 for
+      // b15c1024). The same class also serves the wide-head projection (trunk -> 384).
       preConvGemm = std::make_unique<Sm89Backend::Sm89PreConvGemm>(
-        (const half*)preConv.matmulWeightBuf, ctx->preConvCutlassTactic);
+        (const half*)preConv.matmulWeightBuf, ctx->preConvCutlassTactic,
+        preConv.inChannels, preConv.outChannels);
 #endif
 #ifdef KATAGO_ENABLE_SM89_POSTCONV_GEMM
     if(usePostConvGemm_ && useFP16 && postConv.use1x1Matmul && postConv.matmulWeightBuf != nullptr)
@@ -2241,6 +2253,9 @@ struct Sm89WideHeadProjection {
   {
 #ifdef KATAGO_ENABLE_SM89_PRECONV_GEMM
     const ConvLayerDesc* convs[3] = {&policy->p1Conv, &policy->g1Conv, &value->v1Conv};
+    // PATCH(b15-shape): the head channel split is IDENTICAL in b11 and b15
+    // (p1 96 + g1 96 + v1 192 == 384), so the offsets and the 384 output row stride
+    // are shape-invariant. Only the INPUT width (the trunk) changes: 768 -> 1024.
     const int offsets[3] = {0, 96, 192};
     const int expectedOutChannels[3] = {96, 96, 192};
     if(!enabled || !useFP16)
@@ -2249,28 +2264,27 @@ struct Sm89WideHeadProjection {
       const ConvLayerDesc& conv = *convs[i];
       if(
         conv.convXSize != 1 || conv.convYSize != 1 ||
-        conv.inChannels != 768 || conv.outChannels != expectedOutChannels[i]
+        conv.inChannels != 1024 || conv.outChannels != expectedOutChannels[i]
       )
         return;
     }
 
-    vector<float> weights((size_t)768 * 384);
+    vector<float> weights((size_t)1024 * 384);
     for(int i = 0; i < 3; i++) {
       const ConvLayerDesc& conv = *convs[i];
-      for(int ic = 0; ic < 768; ic++) {
+      for(int ic = 0; ic < 1024; ic++) {
         for(int oc = 0; oc < conv.outChannels; oc++) {
           weights[(size_t)ic * 384 + offsets[i] + oc] =
-            conv.weights[(size_t)oc * 768 + ic];
+            conv.weights[(size_t)oc * 1024 + ic];
         }
       }
     }
     CudaUtils::mallocAndCopyToDevice("wideHeadProjection", weights, weightBuf, true);
-    // The wide-head projection has the same C768->C384 shape as preConv and
-    // uses the retained Stage-2/11 C768->C384 geometry. It is independent of
-    // the preConv scan coordinate so tuning an inner block cannot silently
-    // change the head implementation.
+    // The wide-head projection has the same C<trunk>->C384 shape as the nested preConv
+    // and uses the retained Stage-2/11 geometry. It is independent of the preConv scan
+    // coordinate so tuning an inner block cannot silently change the head implementation.
     gemm = std::make_unique<Sm89Backend::Sm89PreConvGemm>(
-      (const half*)weightBuf, "m128-n128-k32-w64-n64-s5-sw1");
+      (const half*)weightBuf, "m128-n128-k32-w64-n64-s5-sw1", 1024, 384);
     available = true;
 #else
     (void)policy;
@@ -2291,7 +2305,7 @@ struct Sm89WideHeadProjection {
   bool apply(const half* input, half* output, int batchSize, int xySize, cudaStream_t stream) {
 #ifdef KATAGO_ENABLE_SM89_PRECONV_GEMM
     return available && gemm != nullptr &&
-      gemm->apply(input, output, batchSize, xySize, 768, 384, stream);
+      gemm->apply(input, output, batchSize, xySize, 1024, 384, stream);
 #else
     (void)input;
     (void)output;

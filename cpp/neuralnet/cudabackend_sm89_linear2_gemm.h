@@ -87,7 +87,12 @@ class Sm89OutProjGemm {
 #ifdef KATAGO_ENABLE_SM89_PRECONV_GEMM
 class Sm89PreConvGemm {
  public:
-  Sm89PreConvGemm(const half* weights, const std::string& tactic);
+  // PATCH(b15-shape): in/out channels are runtime -- this class is used both for
+  // the nested-block preConv (trunk->mid) and the wide-head projection (trunk->384).
+  Sm89PreConvGemm(
+    const half* weights, const std::string& tactic,
+    int inChannels, int outChannels
+  );
   ~Sm89PreConvGemm();
   Sm89PreConvGemm(const Sm89PreConvGemm&) = delete;
   Sm89PreConvGemm& operator=(const Sm89PreConvGemm&) = delete;

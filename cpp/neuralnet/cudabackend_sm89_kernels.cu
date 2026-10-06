@@ -43,7 +43,8 @@ __global__ void sm89ScaleBiasSiluNHWCHalfVec8Kernel(
   const half* __restrict__ bias,
   int totalVecs
 ) {
-  constexpr int cVecs = 768 / 8;
+  // PATCH(b15-shape): was 768/8 (b11c768 trunk width). b15c1024 trunk is 1024.
+  constexpr int cVecs = 1024 / 8;
   int vecIdx = blockIdx.x * blockDim.x + threadIdx.x;
   if(vecIdx >= totalVecs)
     return;
@@ -68,10 +69,11 @@ bool sm89ScaleBiasSiluNHWCHalfVec8(
   const half* in, half* out, const half* scale, const half* bias,
   int nSize, int xySize, int cSize, cudaStream_t stream
 ) {
-  if(nSize < 1 || xySize != 19 * 19 || cSize != 768)
+  // PATCH(b15-shape): was 768 (b11c768 trunk width). b15c1024 trunk is 1024.
+  if(nSize < 1 || xySize != 19 * 19 || cSize != 1024)
     return false;
   constexpr int blockSize = 256;
-  const int totalVecs = nSize * xySize * (768 / 8);
+  const int totalVecs = nSize * xySize * (1024 / 8);
   const int gridSize = (totalVecs + blockSize - 1) / blockSize;
   sm89ScaleBiasSiluNHWCHalfVec8Kernel<<<gridSize,blockSize,0,stream>>>(
     in, out, scale, bias, totalVecs
@@ -180,7 +182,8 @@ __global__ void sm89InitialGlobalMatMulAddKernel(
 ) {
   constexpr int xySize = 19 * 19;
   constexpr int inChannels = 19;
-  constexpr int outChannels = 768;
+  // PATCH(b15-shape): was 768 (b11c768 trunk width). b15c1024 trunk is 1024.
+  constexpr int outChannels = 1024;
   int c = blockIdx.x * blockDim.x + threadIdx.x;
   int xyBase = blockIdx.y * xyPerBlock;
   int n = blockIdx.z;
@@ -207,7 +210,8 @@ bool sm89InitialGlobalMatMulAdd(
   const half* inputGlobal, const half* weights, half* spatial,
   int nSize, int xySize, int inChannels, int outChannels, cudaStream_t stream
 ) {
-  if(nSize < 1 || xySize != 19 * 19 || inChannels != 19 || outChannels != 768)
+  // PATCH(b15-shape): was 768 (b11c768 trunk width). b15c1024 trunk is 1024.
+  if(nSize < 1 || xySize != 19 * 19 || inChannels != 19 || outChannels != 1024)
     return false;
   constexpr int xyPerBlock = 8;
   constexpr int blockSize = 256;
@@ -445,10 +449,12 @@ __global__ void sm89RMSNormNHWCHalfKernel(
   }
 
   const half* inRow = in + (size_t)row * cSize;
-  float vals[12];
+  // PATCH(b15-shape): was vals[12] / e < 12 (cSize 384 = 12 * 32 lanes). The
+  // attention/FFN RMSNorm now runs over the 512 mid channels = 16 per lane.
+  float vals[16];
   float acc = 0.0f;
 #pragma unroll
-  for(int e = 0; e < 12; e++) {
+  for(int e = 0; e < 16; e++) {
     int c = lane + e * 32;
     float v = __half2float(inRow[c]) * maskVal;
     vals[e] = v;
@@ -460,7 +466,7 @@ __global__ void sm89RMSNormNHWCHalfKernel(
 
   half* outRow = out + (size_t)row * cSize;
 #pragma unroll
-  for(int e = 0; e < 12; e++) {
+  for(int e = 0; e < 16; e++) {
     int c = lane + e * 32;
     float o = vals[e] * rms * __half2float(gamma[c]) + __half2float(beta[c]);
     outRow[c] = __float2half(o * maskVal);
@@ -472,7 +478,8 @@ bool sm89RMSNormNHWCHalf(
   int nSize, int xySize, int cSize, float epsilon, int rowsPerBlock,
   cudaStream_t stream
 ) {
-  if(cSize != 384 || (rowsPerBlock != 4 && rowsPerBlock != 8))
+  // PATCH(b15-shape): was 384 (b11c768 mid channels). b15c1024 mid is 512.
+  if(cSize != 512 || (rowsPerBlock != 4 && rowsPerBlock != 8))
     return false;
   int totalRows = nSize * xySize;
   int blocks = (totalRows + rowsPerBlock - 1) / rowsPerBlock;
